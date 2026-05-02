@@ -1,170 +1,91 @@
-# Multi-Domain Support Triage Agent
+# Support Triage Agent — `code/`
 
-HackerRank Orchestrate submission — May 2026.
-
-Handles support tickets for **HackerRank**, **Claude (Anthropic)**, and **Visa** using RAG over the provided support corpus.
-
----
-
-## Quick start
-
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Set your LLM key (at least one)
-cp ../.env.example ../.env
-# Edit .env and fill in ANTHROPIC_API_KEY or GROQ_API_KEY
-
-# 3. Run the agent
-python agent.py \
-  --input ../support_tickets/support_tickets.csv \
-  --output ../support_tickets/output.csv
-```
-
-Output is written to `support_tickets/output.csv` with columns:
-`issue, subject, company, status, product_area, response, justification, request_type`
+A multi-domain support ticket triage agent built for HackerRank Orchestrate (May 2026).
 
 ---
 
 ## Architecture
 
 ```
-support_tickets.csv
-       │
-       ▼
-┌─────────────────────────────────────────────────────┐
-│  Safety pre-check (injection detection)             │
-└──────────────────────┬──────────────────────────────┘
-                       │
-       ┌───────────────▼──────────────────┐
-       │  Domain inference                │
-       │  (company field → keyword score) │
-       └───────────────┬──────────────────┘
-                       │
-       ┌───────────────▼──────────────────┐
-       │  Rule-based escalation pre-check │
-       │  (fraud / security / outage etc) │
-       └───────────────┬──────────────────┘
-                       │
-       ┌───────────────▼──────────────────┐
-       │  Hybrid Retrieval                │
-       │  BM25 + TF-IDF → RRF fusion      │
-       │  + domain boost (×1.8)           │
-       └───────────────┬──────────────────┘
-                       │
-       ┌───────────────▼──────────────────┐
-       │  LLM Triage (temp=0)             │
-       │  Anthropic → Groq → rule-based   │
-       └───────────────┬──────────────────┘
-                       │
-       ┌───────────────▼──────────────────┐
-       │  Grounding check                 │
-       │  Bigram overlap ≥ 0.20?          │
-       │  No → discard LLM, use rule-based│
-       └───────────────┬──────────────────┘
-                       │
-       ┌───────────────▼──────────────────┐
-       │  Safety override                 │
-       │  Force escalate: fraud /         │
-       │  account_security / emergency    │
-       └───────────────┬──────────────────┘
-                       │
-               output.csv row
+Ticket (issue, subject, company)
+   │
+   ├─ 1. Injection detection   → hard-block malicious inputs before any LLM call
+   ├─ 2. Domain inference      → HackerRank / Claude / Visa (uses `company` field first)
+   ├─ 3. Out-of-scope check    → reply "invalid" for clearly unrelated requests
+   ├─ 4. Rule-based escalation → safety net for fraud / security / outage patterns
+   ├─ 5. Hybrid retrieval      → BM25 + TF-IDF + RRF over local data/ corpus
+   ├─ 6. LLM call              → Anthropic Claude → Groq → rule-based fallback
+   └─ 7. Safety override       → force escalation for high-risk categories
+```
+
+**Retrieval**: Hybrid BM25 + TF-IDF with Reciprocal Rank Fusion (RRF) over all `.md` files in `data/`. No network calls for corpus content — fully offline and reproducible.
+
+**LLM**:  Groq (Llama 3.1 8B instant). Full rule-based deterministic fallback if no key is set.
+
+---
+
+## Quick start
+
+```bash
+# 1. Create and activate a virtual environment
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Set your API key (never hardcode!)
+copy ..\\.env.example ..\\.env     # Windows
+# cp ../.env.example ../.env       # macOS/Linux
+# then edit .env and add your ANTHROPIC_API_KEY
+
+# 4. Run on the full ticket set
+python main.py --input ../support_tickets/support_tickets.csv \
+               --output ../support_tickets/output.csv
+
+
 ```
 
 ---
 
-## Key design decisions
+## Output schema
 
-### Retrieval: BM25 + TF-IDF (no dense embeddings)
+| Column          | Allowed values                                           |
+|-----------------|----------------------------------------------------------|
+| `status`        | `replied`, `escalated`                                   |
+| `product_area`  | support category label (e.g. `assessment_management`)    |
+| `response`      | user-facing answer grounded in the local corpus          |
+| `justification` | 1–2 sentence internal rationale                          |
+| `request_type`  | `product_issue`, `feature_request`, `bug`, `invalid`     |
 
-**Why not sentence-transformers?**
-- No model download required → fully reproducible, offline-friendly
-- Deterministic output (no embedding randomness or version drift)
-- Fast on CPU for hundreds of tickets
+---
 
-**Trade-off:** Misses semantic paraphrases (e.g. "can't log in" ≠ "authentication failure"). Mitigated by the grounding check — if retrieval is poor and the LLM hallucinates to compensate, the grounding check catches it and falls back to rule-based escalation.
+## Files
 
-**Reciprocal Rank Fusion (RRF):** Combines BM25 and TF-IDF rankings without needing to normalise scores across the two systems. K=60 is standard in the literature.
+| File               | Purpose                                  |
+|--------------------|------------------------------------------|
+| `agent.py`         | All logic: corpus loader, retriever, LLM, pipeline |
+| `main.py`          | CLI entry point (calls `agent.main()`)   |
+| `static_corpus.py` | Hardcoded fallback corpus (17+10+10 chunks) |
+| `requirements.txt` | Python dependencies                      |
 
-**Domain boost (×1.8):** Retrieved chunks from the inferred product domain are up-weighted. This prevents cross-domain confusion (e.g. a Visa fraud ticket retrieving HackerRank docs).
+---
 
-### Hallucination prevention: grounding check
+## Design decisions (for the AI Judge interview)
 
-The single biggest risk with LLM-based triage is **hallucinated policies** — the model "filling in" steps that aren't in the corpus. We prevent this two ways:
-
-1. **System prompt (temp=0):** Instructs the model to extract facts verbatim from retrieved docs, and to escalate if the docs don't cover the issue.
-2. **Post-hoc bigram overlap check:** After the LLM responds, we compute what fraction of the response's bigrams appear in the retrieved context. If < 20%, we discard the LLM response and use the rule-based fallback instead.
-
-This means we sometimes escalate a ticket that could have been answered — but that's the safer failure mode for the evaluation criteria ("no hallucinated policies").
-
-### Escalation logic
-
-Two layers:
-- **Pre-LLM rule-based check:** Keyword matching on the ticket content flags high-risk categories (billing_fraud, account_security, legal_compliance, critical_outage, physical_emergency).
-- **Post-LLM safety override:** Even if the LLM says "replied", we force escalation for billing_fraud / account_security / physical_emergency. The LLM decides the product area and justification; the rule ensures we don't accidentally reply to a fraud case.
-
-### LLM fallback chain
-
-```
-ANTHROPIC_API_KEY set? → claude-3-5-haiku-20241022 (temp=0, deterministic)
-        │ not available or fails
-        ▼
-GROQ_API_KEY set? → llama-3.1-8b-instant (temp=0, JSON mode)
-        │ not available or fails
-        ▼
-Rule-based triage (deterministic, corpus-grounded, no LLM needed)
-```
-
-The rule-based triage is a genuine fallback, not a stub — it builds answers directly from retrieved corpus text, so it's always grounded.
+- **Why BM25 + TF-IDF instead of semantic embeddings?** No model downloads, fully deterministic, fast at startup, and sufficient for keyword-rich support content.
+- **Why Groq Llama 3.1 8B instant?** Lowest latency + cost, ideal for structured JSON output triage.
+- **Why a rule-based escalation layer?** LLMs can be unpredictable on high-stakes cases (fraud, security). Hard rules ensure we never auto-reply to identity theft or billing fraud tickets.
+- **Why read from `data/` instead of scraping?** The problem statement requires using only the provided corpus. Scraping introduces non-determinism, rate limits, and policy violations.
+- **Failure modes**: Very long tickets may exceed context; non-English tickets may reduce retrieval quality; tickets with no matching corpus content default to escalation (safe).
 
 ---
 
 ## Environment variables
 
-| Variable            | Required | Description                        |
-|---------------------|----------|------------------------------------|
-| `ANTHROPIC_API_KEY` | Recommended | Primary LLM (best quality)      |
-| `GROQ_API_KEY`      | Optional | Fallback LLM (free tier)           |
-
-Never hardcode keys. Copy `.env.example` to `.env` and fill it in.
-
----
-
-## Corpus structure
-
-The agent reads `.md` files from:
-```
-data/
-  hackerrank/   ← HackerRank support docs
-  claude/       ← Claude / Anthropic support docs
-  visa/         ← Visa support docs
-```
-
-Each file is chunked at paragraph boundaries (blank lines). Chunks of 60–1500 characters are indexed. Shorter fragments are too noisy; longer chunks dilute relevance scores.
-
-If a domain directory is empty or missing, the agent falls back to `static_corpus.py` (if present).
-
----
-
-## Failure modes (known limitations)
-
-| Failure mode | What happens |
-|---|---|
-| Retrieval mismatch (ticket terms ≠ corpus terms) | Grounding check fails → escalate |
-| LLM hallucinates a policy | Grounding check (bigram overlap) catches it → rule-based fallback |
-| Ticket is cross-domain | Domain inference keyword scores; ties resolved by "General" |
-| All LLMs unavailable | Rule-based triage used throughout; still grounded in corpus |
-| Corpus is empty | Agent exits with error (no safe fallback) |
-
----
-
-## Dependencies
-
-See `requirements.txt`. Key packages:
-- `rank-bm25` — BM25 retrieval
-- `scikit-learn` — TF-IDF vectoriser
-- `anthropic` / `groq` — LLM clients
-- `rich` — terminal UI
-- `pandas` — CSV I/O
+| Variable          | Required | Purpose                     |
+|-------------------|----------|-----------------------------|
+| `GROQ_API_KEY`    | Optional | LLM inference   |
