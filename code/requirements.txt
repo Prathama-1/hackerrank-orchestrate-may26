@@ -1,0 +1,13 @@
+# Core dependencies
+rank-bm25>=0.2.2
+scikit-learn>=1.4.0
+numpy>=1.26.0
+pandas>=2.2.0
+requests>=2.31.0
+rich>=13.7.0
+python-dotenv>=1.0.0
+
+# Optional: LLM providers
+groq>=0.9.0          # Uncomment for Groq LLM support (free tier)
+
+# Note: BeautifulSoup4 is NOT required — corpus loads from local data/ files.
