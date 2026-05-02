@@ -20,7 +20,7 @@ Ticket (issue, subject, company)
 
 **Retrieval**: Hybrid BM25 + TF-IDF with Reciprocal Rank Fusion (RRF) over all `.md` files in `data/`. No network calls for corpus content — fully offline and reproducible.
 
-**LLM**: Anthropic Claude (`claude-3-5-haiku-20241022`) via `ANTHROPIC_API_KEY`. Optional Groq fallback (`GROQ_API_KEY`). Full rule-based deterministic fallback if no key is set.
+**LLM**:  Groq (Llama 3.1 8B instant). Full rule-based deterministic fallback if no key is set.
 
 ---
 
@@ -46,10 +46,7 @@ copy ..\\.env.example ..\\.env     # Windows
 python main.py --input ../support_tickets/support_tickets.csv \
                --output ../support_tickets/output.csv
 
-# 5. (Optional) Run with Groq instead
-python main.py --input ../support_tickets/support_tickets.csv \
-               --output ../support_tickets/output.csv \
-               --groq-key YOUR_GROQ_KEY
+
 ```
 
 ---
@@ -80,7 +77,7 @@ python main.py --input ../support_tickets/support_tickets.csv \
 ## Design decisions (for the AI Judge interview)
 
 - **Why BM25 + TF-IDF instead of semantic embeddings?** No model downloads, fully deterministic, fast at startup, and sufficient for keyword-rich support content.
-- **Why Anthropic Haiku?** Lowest latency + cost, ideal for structured JSON output triage.
+- **Why Groq Llama 3.1 8B instant?** Lowest latency + cost, ideal for structured JSON output triage.
 - **Why a rule-based escalation layer?** LLMs can be unpredictable on high-stakes cases (fraud, security). Hard rules ensure we never auto-reply to identity theft or billing fraud tickets.
 - **Why read from `data/` instead of scraping?** The problem statement requires using only the provided corpus. Scraping introduces non-determinism, rate limits, and policy violations.
 - **Failure modes**: Very long tickets may exceed context; non-English tickets may reduce retrieval quality; tickets with no matching corpus content default to escalation (safe).
@@ -91,5 +88,4 @@ python main.py --input ../support_tickets/support_tickets.csv \
 
 | Variable          | Required | Purpose                     |
 |-------------------|----------|-----------------------------|
-| `ANTHROPIC_API_KEY` | Recommended | Primary LLM inference     |
-| `GROQ_API_KEY`    | Optional | Secondary LLM (free tier)   |
+| `GROQ_API_KEY`    | Optional | LLM inference   |
